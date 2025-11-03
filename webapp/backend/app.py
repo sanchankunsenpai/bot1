@@ -23,11 +23,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Whiteout Survival Control Center")
 
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    candidate_origins = [frontend_url, "http://localhost:3000"]
-    allowed_origins = [origin for origin in candidate_origins if origin != "*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(allowed_origins),
+        allow_origins=[frontend_url, "http://localhost:3000", "*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

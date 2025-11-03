@@ -7,45 +7,89 @@ from typing import Dict, List, Optional
 from . import database
 
 
+def _to_int(value) -> Optional[int]:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def list_gift_codes(alliance_id: Optional[int] = None) -> List[Dict]:
     if alliance_id is None:
-        return database.fetch_all("SELECT * FROM gift_codes ORDER BY created_at DESC")
-    return database.fetch_all(
-        "SELECT * FROM gift_codes WHERE alliance_id = ? ORDER BY created_at DESC",
-        (alliance_id,),
+        rows = database.fetch_all(
+            "SELECT giftcode, date, alliance_id, validation_status, created_at FROM gift_codes ORDER BY created_at DESC",
+            db_path=database.GIFTCODE_DB_PATH,
+            ensure=database.ensure_giftcode_schema,
+        )
+    else:
+        rows = database.fetch_all(
+            """
+            SELECT giftcode, date, alliance_id, validation_status, created_at
+            FROM gift_codes
+            WHERE alliance_id = ? OR alliance_id = ?
+            ORDER BY created_at DESC
+            """,
+            (alliance_id, str(alliance_id)),
+            db_path=database.GIFTCODE_DB_PATH,
+            ensure=database.ensure_giftcode_schema,
+        )
+
+    for row in rows:
+        row["alliance_id"] = _to_int(row.get("alliance_id"))
+    return rows
+
+
+def upsert_gift_code(
+    code: str,
+    *,
+    alliance_id: Optional[int] = None,
+    validation_status: str = "pending",
+) -> None:
+    existing = database.fetch_one(
+        "SELECT giftcode FROM gift_codes WHERE giftcode = ?",
+        (code,),
+        db_path=database.GIFTCODE_DB_PATH,
+        ensure=database.ensure_giftcode_schema,
     )
-
-
-def upsert_gift_code(code: str, *, alliance_id: Optional[int] = None, status: str = "pending", redeemed_by: Optional[str] = None, validation_status: str = "pending", confidence: Optional[float] = None) -> int:
-    existing = database.fetch_one("SELECT id FROM gift_codes WHERE code = ?", (code,))
     if existing:
         database.execute(
             """
             UPDATE gift_codes
-            SET alliance_id = ?, status = ?, redeemed_by = ?, validation_status = ?, confidence = ?, last_checked_at = CURRENT_TIMESTAMP
-            WHERE code = ?
+            SET alliance_id = ?, validation_status = ?, date = CURRENT_TIMESTAMP
+            WHERE giftcode = ?
             """,
-            (alliance_id, status, redeemed_by, validation_status, confidence, code),
+            (alliance_id if alliance_id is not None else None, validation_status, code),
+            db_path=database.GIFTCODE_DB_PATH,
+            ensure=database.ensure_giftcode_schema,
         )
-        return existing["id"]
-    return database.execute(
-        """
-        INSERT INTO gift_codes (code, alliance_id, status, redeemed_by, validation_status, confidence, last_checked_at)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """,
-        (code, alliance_id, status, redeemed_by, validation_status, confidence),
-    )
+    else:
+        database.execute(
+            """
+            INSERT INTO gift_codes (giftcode, date, alliance_id, validation_status)
+            VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+            """,
+            (code, alliance_id if alliance_id is not None else None, validation_status),
+            db_path=database.GIFTCODE_DB_PATH,
+            ensure=database.ensure_giftcode_schema,
+        )
 
 
-def update_gift_code_status(code_id: int, status: str, *, redeemed_by: Optional[str] = None) -> None:
+def update_gift_code_status(code: str, validation_status: str) -> None:
     database.execute(
-        "UPDATE gift_codes SET status = ?, redeemed_by = ?, redeemed_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (status, redeemed_by, code_id),
+        "UPDATE gift_codes SET validation_status = ?, date = CURRENT_TIMESTAMP WHERE giftcode = ?",
+        (validation_status, code),
+        db_path=database.GIFTCODE_DB_PATH,
+        ensure=database.ensure_giftcode_schema,
     )
 
 
-def delete_gift_code(code_id: int) -> None:
-    database.execute("DELETE FROM gift_codes WHERE id = ?", (code_id,))
+def delete_gift_code(code: str) -> None:
+    database.execute(
+        "DELETE FROM gift_codes WHERE giftcode = ?",
+        (code,),
+        db_path=database.GIFTCODE_DB_PATH,
+        ensure=database.ensure_giftcode_schema,
+    )
 
 
 __all__ = [

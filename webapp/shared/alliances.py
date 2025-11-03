@@ -2,31 +2,124 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 from . import database
 
 
 # Alliance helpers ---------------------------------------------------------
 
-def list_alliances() -> List[Dict]:
-    return database.fetch_all(
-        "SELECT id, name, discord_server_id, interval_minutes, created_at FROM alliances ORDER BY name"
+
+def _to_int(value) -> Optional[int]:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _alliances_lookup() -> Dict[int, str]:
+    rows = database.fetch_all(
+        "SELECT alliance_id, name FROM alliance_list ORDER BY alliance_id",
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
     )
+    result: Dict[int, str] = {}
+    for row in rows:
+        key = _to_int(row.get("alliance_id"))
+        if key is not None:
+            result[key] = row.get("name")
+    return result
+
+
+def list_alliances() -> List[Dict]:
+    rows = database.fetch_all(
+        """
+        SELECT
+            a.alliance_id AS id,
+            a.name,
+            a.discord_server_id,
+            COALESCE(s.interval, 0) AS interval_minutes,
+            s.channel_id
+        FROM alliance_list a
+        LEFT JOIN alliancesettings s ON a.alliance_id = s.alliance_id
+        ORDER BY a.alliance_id ASC
+        """,
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
+    )
+
+    counts: Dict[int, int] = {}
+    member_rows = database.fetch_all(
+        "SELECT alliance, COUNT(*) AS total FROM users GROUP BY alliance",
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
+    for entry in member_rows:
+        key = _to_int(entry.get("alliance"))
+        if key is not None:
+            counts[key] = entry["total"]
+
+    for row in rows:
+        row_id = _to_int(row.get("id"))
+        row["member_count"] = counts.get(row_id, 0) if row_id is not None else 0
+
+    return rows
 
 
 def get_alliance(alliance_id: int) -> Optional[Dict]:
-    return database.fetch_one(
-        "SELECT id, name, discord_server_id, interval_minutes, created_at FROM alliances WHERE id = ?",
+    alliance = database.fetch_one(
+        """
+        SELECT
+            a.alliance_id AS id,
+            a.name,
+            a.discord_server_id,
+            COALESCE(s.interval, 0) AS interval_minutes,
+            s.channel_id
+        FROM alliance_list a
+        LEFT JOIN alliancesettings s ON a.alliance_id = s.alliance_id
+        WHERE a.alliance_id = ?
+        """,
         (alliance_id,),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
     )
+    if alliance:
+        member_count = database.fetch_one(
+            "SELECT COUNT(*) AS total FROM users WHERE alliance = ? OR alliance = ?",
+            (alliance_id, str(alliance_id)),
+            db_path=database.USERS_DB_PATH,
+            ensure=database.ensure_users_schema,
+        )
+        alliance["member_count"] = member_count["total"] if member_count else 0
+    return alliance
 
 
-def create_alliance(name: str, discord_server_id: Optional[int], interval_minutes: int) -> int:
-    return database.execute(
-        "INSERT INTO alliances (name, discord_server_id, interval_minutes) VALUES (?, ?, ?)",
-        (name, discord_server_id, interval_minutes),
+def create_alliance(
+    name: str,
+    discord_server_id: Optional[int],
+    interval_minutes: int,
+    *,
+    channel_id: Optional[int] = None,
+) -> int:
+    alliance_id = database.execute(
+        "INSERT INTO alliance_list (name, discord_server_id) VALUES (?, ?)",
+        (name, discord_server_id),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
     )
+    database.execute(
+        """
+        INSERT INTO alliancesettings (alliance_id, channel_id, interval)
+        VALUES (?, ?, ?)
+        ON CONFLICT(alliance_id) DO UPDATE SET
+            channel_id = excluded.channel_id,
+            interval = excluded.interval
+        """,
+        (alliance_id, channel_id, interval_minutes),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
+    )
+    return alliance_id
 
 
 def update_alliance(
@@ -35,105 +128,176 @@ def update_alliance(
     name: Optional[str] = None,
     discord_server_id: Optional[int] = None,
     interval_minutes: Optional[int] = None,
+    channel_id: Optional[int] = None,
 ) -> None:
     alliance = get_alliance(alliance_id)
-    if not alliance:
+    if alliance is None:
         raise ValueError("Alliance not found")
 
-    name = name if name is not None else alliance["name"]
-    discord_server_id = (
-        discord_server_id if discord_server_id is not None else alliance["discord_server_id"]
-    )
-    interval_minutes = (
-        interval_minutes if interval_minutes is not None else alliance["interval_minutes"]
+    database.execute(
+        "UPDATE alliance_list SET name = ?, discord_server_id = ? WHERE alliance_id = ?",
+        (
+            name if name is not None else alliance["name"],
+            discord_server_id
+            if discord_server_id is not None
+            else alliance.get("discord_server_id"),
+            alliance_id,
+        ),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
     )
 
     database.execute(
-        "UPDATE alliances SET name = ?, discord_server_id = ?, interval_minutes = ? WHERE id = ?",
-        (name, discord_server_id, interval_minutes, alliance_id),
+        """
+        INSERT INTO alliancesettings (alliance_id, channel_id, interval)
+        VALUES (?, ?, ?)
+        ON CONFLICT(alliance_id) DO UPDATE SET
+            channel_id = excluded.channel_id,
+            interval = excluded.interval
+        """,
+        (
+            alliance_id,
+            channel_id if channel_id is not None else alliance.get("channel_id"),
+            interval_minutes
+            if interval_minutes is not None
+            else alliance.get("interval_minutes", 0),
+        ),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
     )
 
 
 def delete_alliance(alliance_id: int) -> None:
-    database.execute("DELETE FROM alliances WHERE id = ?", (alliance_id,))
+    database.execute(
+        "DELETE FROM alliancesettings WHERE alliance_id = ?",
+        (alliance_id,),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
+    )
+    database.execute(
+        "DELETE FROM alliance_list WHERE alliance_id = ?",
+        (alliance_id,),
+        db_path=database.ALLIANCE_DB_PATH,
+        ensure=database.ensure_alliance_schema,
+    )
+    database.execute(
+        "UPDATE users SET alliance = NULL WHERE alliance = ? OR alliance = ?",
+        (alliance_id, str(alliance_id)),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
 
 
 # Member helpers -----------------------------------------------------------
 
+
 def list_members(alliance_id: Optional[int] = None) -> List[Dict]:
+    alliances = _alliances_lookup()
+
     if alliance_id is None:
-        return database.fetch_all(
-            """
-            SELECT m.id, m.alliance_id, m.name, m.fl_level, m.title, m.joined_at, m.notes,
-                   a.name AS alliance_name
-            FROM alliance_members m
-            LEFT JOIN alliances a ON m.alliance_id = a.id
-            ORDER BY a.name, m.name
-            """
+        members = database.fetch_all(
+            "SELECT fid, nickname, furnace_lv, kid, stove_lv_content, alliance FROM users ORDER BY nickname",
+            db_path=database.USERS_DB_PATH,
+            ensure=database.ensure_users_schema,
         )
-    return database.fetch_all(
-        """
-        SELECT m.id, m.alliance_id, m.name, m.fl_level, m.title, m.joined_at, m.notes,
-               a.name AS alliance_name
-        FROM alliance_members m
-        LEFT JOIN alliances a ON m.alliance_id = a.id
-        WHERE m.alliance_id = ?
-        ORDER BY m.name
-        """,
-        (alliance_id,),
-    )
+    else:
+        members = database.fetch_all(
+            """
+            SELECT fid, nickname, furnace_lv, kid, stove_lv_content, alliance
+            FROM users
+            WHERE alliance = ? OR alliance = ?
+            ORDER BY nickname
+            """,
+            (alliance_id, str(alliance_id)),
+            db_path=database.USERS_DB_PATH,
+            ensure=database.ensure_users_schema,
+        )
+
+    for member in members:
+        alliance_value = member.get("alliance")
+        alliance_int = _to_int(alliance_value)
+        member["alliance_id"] = alliance_int
+        member["alliance_name"] = alliances.get(alliance_int) if alliance_int is not None else None
+    return members
 
 
 def add_member(
-    alliance_id: int,
-    name: str,
+    fid: int,
+    nickname: str,
     *,
-    fl_level: Optional[int] = None,
-    title: Optional[str] = None,
-    joined_at: Optional[str] = None,
-    notes: Optional[str] = None,
+    alliance_id: Optional[int] = None,
+    furnace_lv: Optional[int] = None,
+    kid: Optional[int] = None,
+    stove_lv_content: Optional[str] = None,
 ) -> int:
-    return database.execute(
+    database.execute(
         """
-        INSERT INTO alliance_members (alliance_id, name, fl_level, title, joined_at, notes)
+        INSERT INTO users (fid, nickname, furnace_lv, kid, stove_lv_content, alliance)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (alliance_id, name, fl_level, title, joined_at, notes),
+        (
+            fid,
+            nickname,
+            furnace_lv,
+            kid,
+            stove_lv_content,
+            alliance_id if alliance_id is not None else None,
+        ),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
     )
+    return fid
 
 
 def update_member(
-    member_id: int,
+    fid: int,
     *,
-    name: Optional[str] = None,
-    fl_level: Optional[int] = None,
-    title: Optional[str] = None,
-    joined_at: Optional[str] = None,
-    notes: Optional[str] = None,
+    nickname: Optional[str] = None,
+    furnace_lv: Optional[int] = None,
+    kid: Optional[int] = None,
+    stove_lv_content: Optional[str] = None,
+    alliance_id: Optional[int] = None,
 ) -> None:
-    member = database.fetch_one("SELECT * FROM alliance_members WHERE id = ?", (member_id,))
-    if not member:
+    member = database.fetch_one(
+        "SELECT * FROM users WHERE fid = ?",
+        (fid,),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
+    if member is None:
         raise ValueError("Member not found")
+
+    existing_alliance = _to_int(member.get("alliance"))
+    next_alliance = alliance_id if alliance_id is not None else existing_alliance
 
     database.execute(
         """
-        UPDATE alliance_members
-        SET name = ?, fl_level = ?, title = ?, joined_at = ?, notes = ?
-        WHERE id = ?
+        UPDATE users
+        SET nickname = ?, furnace_lv = ?, kid = ?, stove_lv_content = ?, alliance = ?
+        WHERE fid = ?
         """,
         (
-            name if name is not None else member["name"],
-            fl_level if fl_level is not None else member["fl_level"],
-            title if title is not None else member["title"],
-            joined_at if joined_at is not None else member["joined_at"],
-            notes if notes is not None else member["notes"],
-            member_id,
+            nickname if nickname is not None else member["nickname"],
+            furnace_lv if furnace_lv is not None else member["furnace_lv"],
+            kid if kid is not None else member["kid"],
+            stove_lv_content
+            if stove_lv_content is not None
+            else member["stove_lv_content"],
+            next_alliance,
+            fid,
         ),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
     )
 
 
-def remove_member(member_id: int) -> None:
-    database.execute("DELETE FROM alliance_members WHERE id = ?", (member_id,))
+def remove_member(fid: int) -> None:
+    database.execute(
+        "DELETE FROM users WHERE fid = ?",
+        (fid,),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
 
 
 __all__ = [

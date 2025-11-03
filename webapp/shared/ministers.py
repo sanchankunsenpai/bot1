@@ -7,67 +7,100 @@ from typing import Dict, List, Optional
 from . import database
 
 
+def _to_int(value) -> Optional[int]:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def list_ministers(alliance_id: Optional[int] = None) -> List[Dict]:
     if alliance_id is None:
-        return database.fetch_all("SELECT * FROM ministers ORDER BY start_time DESC")
-    return database.fetch_all(
-        "SELECT * FROM ministers WHERE alliance_id = ? ORDER BY start_time DESC",
-        (alliance_id,),
+        rows = database.fetch_all(
+            "SELECT fid, appointment_type, time, alliance FROM appointments ORDER BY time DESC",
+            db_path=database.SVS_DB_PATH,
+            ensure=database.ensure_svs_schema,
+        )
+    else:
+        rows = database.fetch_all(
+            "SELECT fid, appointment_type, time, alliance FROM appointments WHERE alliance = ? ORDER BY time DESC",
+            (int(alliance_id),),
+            db_path=database.SVS_DB_PATH,
+            ensure=database.ensure_svs_schema,
+        )
+
+    names = database.fetch_all(
+        "SELECT fid, nickname FROM users",
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
     )
+    name_lookup = {row["fid"]: row["nickname"] for row in names}
+
+    for row in rows:
+        row["player_name"] = name_lookup.get(row["fid"])
+        alliance_value = row.get("alliance")
+        row["alliance_id"] = _to_int(alliance_value)
+        row["id"] = f"{row['fid']}:{row['appointment_type']}"
+    return rows
 
 
 def create_minister(
+    fid: int,
+    appointment_type: str,
+    time: str,
     alliance_id: Optional[int],
-    role: str,
-    player_name: str,
-    start_time: str,
-    end_time: str,
-    *,
-    notes: Optional[str] = None,
-) -> int:
-    return database.execute(
+) -> None:
+    database.execute(
         """
-        INSERT INTO ministers (alliance_id, role, player_name, start_time, end_time, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO appointments (fid, appointment_type, time, alliance)
+        VALUES (?, ?, ?, ?)
         """,
-        (alliance_id, role, player_name, start_time, end_time, notes),
+        (fid, appointment_type, time, _to_int(alliance_id) if alliance_id is not None else None),
+        db_path=database.SVS_DB_PATH,
+        ensure=database.ensure_svs_schema,
     )
 
 
 def update_minister(
-    minister_id: int,
+    fid: int,
+    appointment_type: str,
     *,
+    time: Optional[str] = None,
     alliance_id: Optional[int] = None,
-    role: Optional[str] = None,
-    player_name: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    notes: Optional[str] = None,
 ) -> None:
-    minister = database.fetch_one("SELECT * FROM ministers WHERE id = ?", (minister_id,))
-    if not minister:
+    record = database.fetch_one(
+        "SELECT fid, appointment_type, time, alliance FROM appointments WHERE fid = ? AND appointment_type = ?",
+        (fid, appointment_type),
+        db_path=database.SVS_DB_PATH,
+        ensure=database.ensure_svs_schema,
+    )
+    if record is None:
         raise ValueError("Minister booking not found")
 
     database.execute(
         """
-        UPDATE ministers
-        SET alliance_id = ?, role = ?, player_name = ?, start_time = ?, end_time = ?, notes = ?
-        WHERE id = ?
+        UPDATE appointments
+        SET time = ?, alliance = ?
+        WHERE fid = ? AND appointment_type = ?
         """,
         (
-            alliance_id if alliance_id is not None else minister["alliance_id"],
-            role if role is not None else minister["role"],
-            player_name if player_name is not None else minister["player_name"],
-            start_time if start_time is not None else minister["start_time"],
-            end_time if end_time is not None else minister["end_time"],
-            notes if notes is not None else minister["notes"],
-            minister_id,
+            time if time is not None else record["time"],
+            _to_int(alliance_id) if alliance_id is not None else record.get("alliance"),
+            fid,
+            appointment_type,
         ),
+        db_path=database.SVS_DB_PATH,
+        ensure=database.ensure_svs_schema,
     )
 
 
-def delete_minister(minister_id: int) -> None:
-    database.execute("DELETE FROM ministers WHERE id = ?", (minister_id,))
+def delete_minister(fid: int, appointment_type: str) -> None:
+    database.execute(
+        "DELETE FROM appointments WHERE fid = ? AND appointment_type = ?",
+        (fid, appointment_type),
+        db_path=database.SVS_DB_PATH,
+        ensure=database.ensure_svs_schema,
+    )
 
 
 __all__ = [
