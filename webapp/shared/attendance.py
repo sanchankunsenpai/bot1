@@ -2,58 +2,132 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import database
 
 
-def list_attendance(event_id: int) -> List[Dict]:
+def list_attendance(session_id: str) -> List[Dict]:
+    session_key = str(session_id)
     return database.fetch_all(
         """
-        SELECT ar.id, ar.event_id, ar.member_id, ar.status, ar.updated_at,
-               m.name AS member_name, a.name AS alliance_name
-        FROM attendance_records ar
-        JOIN alliance_members m ON ar.member_id = m.id
-        JOIN alliances a ON m.alliance_id = a.id
-        WHERE ar.event_id = ?
-        ORDER BY m.name
+        SELECT
+            record_id AS id,
+            session_id,
+            session_name,
+            player_id,
+            player_name,
+            alliance_id,
+            alliance_name,
+            status,
+            points,
+            event_type,
+            event_date,
+            marked_at,
+            marked_by,
+            marked_by_username
+        FROM attendance_records
+        WHERE session_id = ?
+        ORDER BY player_name COLLATE NOCASE
         """,
-        (event_id,),
+        (session_key,),
+        db_path=database.ATTENDANCE_DB_PATH,
+        ensure=database.ensure_attendance_schema,
     )
 
 
-def upsert_attendance(event_id: int, member_id: int, status: str) -> None:
+def _fetch_session_template(session_id: str) -> Optional[Dict]:
+    return database.fetch_one(
+        """
+        SELECT session_name, alliance_id, alliance_name, event_type, event_date
+        FROM attendance_records
+        WHERE session_id = ?
+        LIMIT 1
+        """,
+        (session_id,),
+        db_path=database.ATTENDANCE_DB_PATH,
+        ensure=database.ensure_attendance_schema,
+    )
+
+
+def upsert_attendance(session_id: str, member_id: int, status: str) -> None:
+    session_key = str(session_id)
+    player_id = str(member_id)
     existing = database.fetch_one(
-        "SELECT id FROM attendance_records WHERE event_id = ? AND member_id = ?",
-        (event_id, member_id),
+        "SELECT record_id FROM attendance_records WHERE session_id = ? AND player_id = ?",
+        (session_key, player_id),
+        db_path=database.ATTENDANCE_DB_PATH,
+        ensure=database.ensure_attendance_schema,
     )
     if existing:
         database.execute(
-            "UPDATE attendance_records SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (status, existing["id"]),
+            """
+            UPDATE attendance_records
+            SET status = ?, marked_at = CURRENT_TIMESTAMP
+            WHERE record_id = ?
+            """,
+            (status, existing["record_id"]),
+            db_path=database.ATTENDANCE_DB_PATH,
+            ensure=database.ensure_attendance_schema,
         )
-    else:
-        database.execute(
-            "INSERT INTO attendance_records (event_id, member_id, status) VALUES (?, ?, ?)",
-            (event_id, member_id, status),
+        return
+
+    template = _fetch_session_template(session_key)
+    if template is None:
+        raise ValueError("Attendance session not found")
+
+    database.execute(
+        """
+        INSERT INTO attendance_records (
+            player_id,
+            player_name,
+            session_id,
+            session_name,
+            alliance_id,
+            alliance_name,
+            status,
+            points,
+            event_type,
+            event_date,
+            marked_by,
+            marked_by_username
         )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'webapp', 'Control Center')
+        """,
+        (
+            player_id,
+            player_id,
+            session_key,
+            template["session_name"],
+            template["alliance_id"],
+            template["alliance_name"],
+            status,
+            template.get("event_type"),
+            template.get("event_date"),
+        ),
+        db_path=database.ATTENDANCE_DB_PATH,
+        ensure=database.ensure_attendance_schema,
+    )
 
 
 def attendance_summary(alliance_id: int) -> List[Dict]:
+    alliance_key = str(alliance_id)
     return database.fetch_all(
         """
-        SELECT e.name AS event_name,
-               SUM(CASE WHEN ar.status = 'present' THEN 1 ELSE 0 END) AS present,
-               SUM(CASE WHEN ar.status = 'absent' THEN 1 ELSE 0 END) AS absent,
-               SUM(CASE WHEN ar.status = 'late' THEN 1 ELSE 0 END) AS late
-        FROM events e
-        LEFT JOIN attendance_records ar ON ar.event_id = e.id
-        LEFT JOIN alliance_members m ON ar.member_id = m.id
-        WHERE e.alliance_id = ?
-        GROUP BY e.id
-        ORDER BY e.start_time DESC
+        SELECT
+            session_name AS event_name,
+            SUM(CASE WHEN LOWER(status) = 'present' THEN 1 ELSE 0 END) AS present,
+            SUM(CASE WHEN LOWER(status) = 'absent' THEN 1 ELSE 0 END) AS absent,
+            SUM(CASE WHEN LOWER(status) = 'late' THEN 1 ELSE 0 END) AS late,
+            MAX(event_date) AS last_event_date
+        FROM attendance_records
+        WHERE alliance_id = ?
+        GROUP BY session_id, session_name
+        ORDER BY last_event_date DESC
         """,
-        (alliance_id,),
+        (alliance_key,),
+        db_path=database.ATTENDANCE_DB_PATH,
+        ensure=database.ensure_attendance_schema,
     )
 
 

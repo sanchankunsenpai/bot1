@@ -13,7 +13,6 @@ from ..utils.deps import get_current_user
 router = APIRouter(prefix="/alliances", tags=["alliances"], dependencies=[Depends(get_current_user)])
 
 
-@router.get("/", response_model=List[schemas.AllianceResponse])
 def _serialize_alliance(raw: dict) -> schemas.AllianceResponse:
     return schemas.AllianceResponse(
         id=int(raw["id"]),
@@ -25,6 +24,7 @@ def _serialize_alliance(raw: dict) -> schemas.AllianceResponse:
     )
 
 
+@router.get("/", response_model=List[schemas.AllianceResponse])
 def get_alliances():
     return [_serialize_alliance(alliance) for alliance in alliance_service.list_alliances()]
 
