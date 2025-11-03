@@ -28,7 +28,7 @@ pip install -r requirements.txt
 uvicorn webapp.backend.app:app --reload
 ```
 
-The API listens on `http://127.0.0.1:8000`. Swagger documentation is available at `/docs` after authentication.
+The API listens on `http://127.0.0.1:8000` under the `/api` prefix (for example `/api/alliances`). Swagger documentation is available at `/docs` after authentication.
 
 ### Environment variables
 
@@ -45,7 +45,7 @@ npm install
 npm run dev
 ```
 
-The development server runs on `http://localhost:5173` and proxies API calls to the FastAPI backend (configure in `src/api/client.js`).
+The development server runs on `http://localhost:5173` and proxies API calls to the FastAPI backend (configure the base URL in `src/api/client.js`).
 
 ## Docker
 

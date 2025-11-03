@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 from . import alliances, auth, events, gift_codes, logs, members, ministers
 
@@ -18,8 +18,10 @@ ROUTERS = [
 
 
 def register_routers(app: FastAPI) -> None:
+    api_router = APIRouter(prefix="/api")
     for router in ROUTERS:
-        app.include_router(router)
+        api_router.include_router(router)
+    app.include_router(api_router)
 
 
 __all__ = ["register_routers"]
