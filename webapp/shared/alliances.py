@@ -221,8 +221,17 @@ def list_members(alliance_id: Optional[int] = None) -> List[Dict]:
     return members
 
 
+def _next_member_id() -> int:
+    row = database.fetch_one(
+        "SELECT COALESCE(MAX(fid), 0) + 1 AS next_id FROM users",
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
+    return int(row["next_id"]) if row and row.get("next_id") is not None else 1
+
+
 def add_member(
-    fid: int,
+    fid: Optional[int],
     nickname: str,
     *,
     alliance_id: Optional[int] = None,
@@ -230,6 +239,9 @@ def add_member(
     kid: Optional[int] = None,
     stove_lv_content: Optional[str] = None,
 ) -> int:
+    if fid is None:
+        fid = _next_member_id()
+
     database.execute(
         """
         INSERT INTO users (fid, nickname, furnace_lv, kid, stove_lv_content, alliance)
@@ -300,6 +312,26 @@ def remove_member(fid: int) -> None:
     )
 
 
+def get_member(fid: int) -> Optional[Dict]:
+    alliances = _alliances_lookup()
+    member = database.fetch_one(
+        "SELECT fid, nickname, furnace_lv, kid, stove_lv_content, alliance FROM users WHERE fid = ?",
+        (fid,),
+        db_path=database.USERS_DB_PATH,
+        ensure=database.ensure_users_schema,
+    )
+    if member is None:
+        return None
+
+    alliance_value = member.get("alliance")
+    alliance_int = _to_int(alliance_value)
+    member["alliance_id"] = alliance_int
+    member["alliance_name"] = (
+        alliances.get(alliance_int) if alliance_int is not None else None
+    )
+    return member
+
+
 __all__ = [
     "list_alliances",
     "get_alliance",
@@ -310,4 +342,5 @@ __all__ = [
     "add_member",
     "update_member",
     "remove_member",
+    "get_member",
 ]

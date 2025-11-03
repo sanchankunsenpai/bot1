@@ -299,6 +299,18 @@ def executemany(
         conn.executemany(query, seq_of_params)
 
 
+def ensure_database() -> None:
+    """Ensure all databases used by the backend are initialised."""
+
+    ensure_webapp_schema()
+    ensure_alliance_schema()
+    ensure_users_schema()
+    ensure_giftcode_schema()
+    ensure_attendance_schema()
+    ensure_svs_schema()
+    ensure_settings_schema()
+
+
 __all__ = [
     "ATTENDANCE_DB_PATH",
     "ALLIANCE_DB_PATH",
@@ -309,6 +321,7 @@ __all__ = [
     "WEBAPP_DB_PATH",
     "ensure_alliance_schema",
     "ensure_attendance_schema",
+    "ensure_database",
     "ensure_giftcode_schema",
     "ensure_settings_schema",
     "ensure_svs_schema",
